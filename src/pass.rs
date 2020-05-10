@@ -301,6 +301,9 @@ impl PasswordStore {
         let mut last_tree =
             repo.find_commit(repo.head()?.target().unwrap())?.tree()?;
         let mut last_commit = repo.head()?.peel_to_commit()?;
+
+        let ap = Arc::new(Mutex::new(&mut passwords));
+        let af = Arc::new(Mutex::new(&mut files_to_consider));
         for rev in walk {
             let oid = rev?;
 
@@ -317,20 +320,38 @@ impl PasswordStore {
                         delta.new_file().path().unwrap().display()
                     );
 
-                    files_to_consider.retain(|filename| {
+                    (*af.lock().unwrap()).retain(|filename| {
                         push_password_if_match(
                             filename,
                             &entry_name,
-                            &commit,
+                            &last_commit,
                             &repo,
                             &dir,
-                            &mut passwords,
+                            ap.clone(),
                             &oid,
                         )
                     });
                     true
                 },
-                None,
+                Some(&mut |delta: git2::DiffDelta, _diff_binary: git2::DiffBinary| {
+                    let entry_name = format!(
+                        "{}",
+                        delta.new_file().path().unwrap().display()
+                    );
+
+                    (*af.lock().unwrap()).retain(|filename| {
+                        push_password_if_match(
+                            filename,
+                            &entry_name,
+                            &last_commit,
+                            &repo,
+                            &dir,
+                            ap.clone(),
+                            &oid,
+                        )
+                    });
+                    true
+                }),
                 None,
                 None,
             )?;
@@ -350,7 +371,7 @@ impl PasswordStore {
                         &last_commit,
                         &repo,
                         &dir,
-                        &mut passwords,
+                        ap.clone(),
                         &last_commit.id(),
                     )
                 });
@@ -510,7 +531,7 @@ fn push_password_if_match(
     commit: &git2::Commit,
     repo: &git2::Repository,
     dir: &path::PathBuf,
-    passwords: &mut Vec<PasswordEntry>,
+    passwords: Arc<Mutex<&mut Vec<PasswordEntry>>>,
     oid: &git2::Oid,
 ) -> bool {
     if *filename == *entry_name {
@@ -524,7 +545,7 @@ fn push_password_if_match(
         let mut pbuf: path::PathBuf = (*dir.clone()).to_owned();
         pbuf.push(filename);
 
-        passwords.push(PasswordEntry::new(
+        (*passwords.lock().unwrap()).push(PasswordEntry::new(
             &dir,
             &pbuf,
             time_return,
@@ -539,9 +560,9 @@ fn push_password_if_match(
 
 /// Find the name of the commiter, or an error message
 fn name_from_commit(commit: &git2::Commit) -> Result<String> {
-    match commit.committer().name() {
+    match commit.author().name() {
         Some(s) => Ok(s.to_string()),
-        None => Err(Error::Generic("missing committer name")),
+        None => Err(Error::Generic("missing author name")),
     }
 }
 
